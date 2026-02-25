@@ -1,0 +1,146 @@
+# MolFM-Lite Configuration
+
+project:
+  name: "molfm-lite"
+  version: "0.1.0"
+  seed: 42
+
+# AWS Configuration
+aws:
+  region: "us-east-1"
+  s3_bucket: "molfm-lite-data"
+  sagemaker:
+    instance_type: "ml.g4dn.xlarge"
+    instance_count: 1
+    max_runtime: 86400  # 24 hours
+
+# Data Configuration
+data:
+  zinc250k:
+    url: "https://raw.githubusercontent.com/aspuru-guzik-group/chemical_vae/master/models/zinc_properties/250k_rndm_zinc_drugs_clean_3.csv"
+    num_samples: 250000
+  chembl:
+    subset_size: 500000
+  conformers:
+    num_conformers: 5
+    method: "ETKDG"
+    optimize: true
+    max_attempts: 100
+  cache_dir: "data/cache"
+
+# Model Architecture
+model:
+  # 1D Encoder (SMILES/SELFIES)
+  encoder_1d:
+    type: "transformer"
+    vocab_size: 128
+    hidden_dim: 256
+    num_layers: 4
+    num_heads: 8
+    dropout: 0.1
+    max_seq_len: 256
+
+  # 2D Encoder (Graph)
+  encoder_2d:
+    type: "gin"  # Graph Isomorphism Network
+    hidden_dim: 256
+    num_layers: 4
+    dropout: 0.1
+    pooling: "mean"
+
+  # 3D Encoder (Conformer)
+  encoder_3d:
+    type: "schnet_lite"
+    hidden_dim: 128
+    num_interactions: 3
+    num_filters: 128
+    cutoff: 10.0
+
+  # Conformer Ensemble Attention
+  conformer_attention:
+    use_energy_weights: true
+    temperature: 1.0
+
+  # Cross-Modal Fusion
+  fusion:
+    hidden_dim: 256
+    num_heads: 8
+    dropout: 0.1
+
+  # Context Conditioning
+  context:
+    assay_types: 32
+    target_dim: 128
+    cell_line_dim: 64
+    use_film: true
+
+  # Prediction Head
+  head:
+    hidden_dims: [256, 128]
+    dropout: 0.2
+    uncertainty: true  # MC Dropout
+
+# Pre-training Configuration
+pretraining:
+  batch_size: 128
+  num_epochs: 50
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  warmup_steps: 1000
+
+  # Contrastive Loss
+  contrastive:
+    temperature: 0.07
+    use_hard_negatives: true
+
+  # Multi-task Objectives
+  objectives:
+    cross_modal_contrastive: 1.0
+    masked_atom_prediction: 0.5
+    consistency_loss: 0.3
+
+# Fine-tuning Configuration
+finetuning:
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 5e-5
+  weight_decay: 1e-4
+  patience: 15
+
+  # Benchmarks
+  benchmarks:
+    - name: "bbbp"
+      task_type: "classification"
+      num_tasks: 1
+      metric: "roc_auc"
+    - name: "bace"
+      task_type: "classification"
+      num_tasks: 1
+      metric: "roc_auc"
+    - name: "tox21"
+      task_type: "classification"
+      num_tasks: 12
+      metric: "roc_auc"
+    - name: "lipophilicity"
+      task_type: "regression"
+      num_tasks: 1
+      metric: "rmse"
+
+# Evaluation
+evaluation:
+  num_seeds: 3
+  confidence_intervals: true
+  ablations:
+    - "no_context"
+    - "single_conformer"
+    - "1d_only"
+    - "2d_only"
+    - "3d_only"
+    - "no_pretraining"
+
+# Logging
+logging:
+  use_wandb: true
+  wandb_project: "molfm-lite"
+  log_interval: 100
+  save_interval: 1000

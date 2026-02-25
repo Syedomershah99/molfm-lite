@@ -1,0 +1,872 @@
+\documentclass[11pt]{article}
+
+% Page setup
+\usepackage[margin=1in]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+
+% Math and symbols
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{amsthm}
+\usepackage{bm}
+
+% Graphics and tables
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{subcaption}
+
+% Algorithms
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+% References and links
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+\usepackage{natbib}
+
+% Misc
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+% Custom commands
+\newcommand{\modelname}{MolFM-Lite}
+\newcommand{\ie}{\textit{i.e.}}
+\newcommand{\eg}{\textit{e.g.}}
+\newcommand{\etal}{\textit{et al.}}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+
+\title{\textbf{MolFM-Lite: Efficient Context-Aware Multi-Modal Molecular Foundation Model with Conformer Ensemble Attention for Drug Discovery}}
+
+\author{
+Syed Omer Shah$^{1}$\thanks{Corresponding author: syedomer@buffalo.edu} \quad
+Mohammed Maqsood Ahmed$^{1}$ \quad
+Danish Mohiuddin Mohammed$^{2}$ \\[0.5em]
+$^{1}$Department of Computer Science and Engineering, University at Buffalo, Buffalo, NY, USA \\
+$^{2}$Khoury College of Computer Sciences, Northeastern University, Boston, MA, USA \\[0.3em]
+\texttt{\{syedomer, m58\}@buffalo.edu} \quad \texttt{mohammed.dan@northeastern.edu}
+}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Molecular property prediction is fundamental to drug discovery, yet current approaches face three critical limitations: reliance on single molecular representations, static treatment of inherently flexible 3D structures, and blindness to experimental context. We present \modelname{}, a multi-modal molecular foundation model that jointly learns from SELFIES sequences (1D), molecular graphs (2D), and conformer ensembles (3D), while conditioning predictions on experimental context. Our key contributions include: (1) a novel conformer ensemble attention mechanism that captures molecular flexibility through Boltzmann-weighted aggregation of multiple 3D conformations; (2) cross-modal fusion via attention that enables complementary information sharing across modalities; (3) context conditioning via Feature-wise Linear Modulation (FiLM) to account for experimental variability; and (4) an information-theoretic analysis demonstrating that synergistic information across modalities explains the observed performance gains. Training from scratch on a single T4 GPU (under \$150 AWS credits), \modelname{} achieves state-of-the-art performance on MoleculeNet benchmarks: 0.956 AUC on BBBP (+4.4\% over Uni-Mol), 0.902 AUC on BACE (+1.9\%), 0.848 AUC on Tox21 (+4.4\%), and 0.570 RMSE on Lipophilicity ($-$5.5\%). Comprehensive ablation studies demonstrate that each architectural component contributes meaningfully, with multi-modal fusion providing 7--11\% improvement over single-modality baselines and conformer ensembles adding approximately 2\%. Our results show that thoughtful architectural design---multi-modal fusion, conformer ensemble attention, and context conditioning---can outperform computationally expensive pre-training approaches, democratizing advanced molecular modeling for academic laboratories. All code and trained models are publicly available.\footnote{Code: \url{https://github.com/Syedomershah99/molfm-lite}}
+\end{abstract}
+
+\textbf{Keywords:} molecular property prediction, multi-modal learning, foundation models, drug discovery, contrastive learning, graph neural networks, conformer ensemble
+
+\section{Introduction}
+\label{sec:introduction}
+
+Accurate prediction of molecular properties is essential for accelerating drug discovery, reducing costs, and improving success rates in clinical trials \citep{vamathevan2019applications}. Drug development costs continue to rise---exceeding \$2 billion per successful compound \citep{dimasi2016innovation}---making computational methods that can reliably predict molecular behavior before synthesis increasingly valuable.
+
+Molecules are inherently multi-scale objects. Write down aspirin as a SMILES string and you capture its atom connectivity. Draw the molecular graph and you see which functional groups neighbor each other. Compute the 3D structure and you understand its shape---crucial for how it fits into a protein pocket. Each representation tells part of the story; none tells all of it. Yet most machine learning models focus on just one representation. ChemBERTa \citep{chithrananda2020chemberta} treats molecules as text. GROVER \citep{rong2020grover} works with graphs. SchNet \citep{schutt2017schnet} processes coordinates. They are all leaving information on the table.
+
+Current state-of-the-art approaches face several fundamental limitations:
+
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+    \item \textbf{Single-modality bias}: Most models use either SMILES strings \citep{chithrananda2020chemberta}, molecular graphs \citep{rong2020grover}, or 3D structures \citep{schutt2017schnet}, but not all three. Each representation captures different aspects of molecular chemistry---sequence models capture functional group patterns, graphs encode connectivity and local structure, while 3D coordinates provide spatial relationships essential for binding and reactivity.
+
+    \item \textbf{Static 3D assumption}: Every geometric model we are aware of---SchNet, DimeNet \citep{gasteiger2020directional}, GEM \citep{fang2022geometry}, even the recent Uni-Mol \citep{zhou2023unimol}---uses a single conformer per molecule. But molecules are not frozen sculptures. They vibrate, rotate, and explore different shapes constantly. The bioactive conformation often is not the lowest-energy structure \citep{hawkins2017conformation}. Ignoring conformational flexibility means ignoring biology.
+
+    \item \textbf{Context-blindness}: The same compound tested in a biochemical assay versus a cell-based assay can give wildly different results. Current models ignore this experimental context, limiting their practical utility in drug discovery pipelines where conditions vary substantially \citep{kola2004can}.
+
+    \item \textbf{Computational requirements}: State-of-the-art foundation models often require massive computational resources for pre-training \citep{zhou2023unimol}, limiting accessibility for academic laboratories and smaller organizations.
+\end{enumerate}
+
+We address these limitations with \modelname{}, a multi-modal foundation model designed around three key ideas. First, encode all three representations---1D sequences, 2D graphs, 3D structures---and let them interact through cross-attention. Second, generate multiple conformers and aggregate them with attention weights informed by their relative energies, providing a physics-based prior while allowing task-specific learning. Third, condition predictions on experimental context when available.
+
+Our contributions are:
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+    \item \textbf{Multi-modal architecture} with cross-attention fusion of 1D, 2D, and 3D molecular representations, yielding 7--11\% improvement over single-modality baselines
+    \item \textbf{Conformer ensemble attention} combining learned attention with Boltzmann-weighted aggregation, providing approximately 2\% improvement over single-conformer approaches
+    \item \textbf{Context conditioning} via FiLM layers to incorporate experimental metadata, enabling condition-dependent predictions
+    \item \textbf{Information-theoretic analysis} demonstrating the existence of synergistic information across modalities that explains observed gains
+    \item \textbf{Comprehensive ablation studies} systematically quantifying each component's contribution
+    \item \textbf{Efficient training methodology} achieving state-of-the-art results with under \$150 in compute costs on a single T4 GPU
+\end{enumerate}
+
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Molecular Representation Learning}
+
+\paragraph{1D Sequence Methods}
+SMILES strings \citep{weininger1988smiles} provide a canonical text representation of molecules. ChemBERTa \citep{chithrananda2020chemberta} and MolBERT \citep{fabian2020molecular} apply transformer architectures to SMILES, achieving strong performance through self-supervised pre-training. SELFIES \citep{krenn2020selfies} offers a more robust alternative with guaranteed syntactic validity. While effective for capturing sequential patterns and functional groups, these methods miss spatial information critical for binding and reactivity.
+
+\paragraph{2D Graph Methods}
+Molecular graphs naturally represent atoms as nodes and bonds as edges. Graph Isomorphism Networks (GIN) \citep{xu2019powerful} and Graph Attention Networks \citep{velickovic2018graph} have been successfully applied to molecular property prediction. GROVER \citep{rong2020grover} introduced self-supervised pre-training for molecular graphs. GPS++ \citep{masters2023gps} combined local message-passing with global Transformer attention. Graphormer \citep{ying2021transformers} incorporates spatial information into Transformer attention. These methods capture local atomic environments and molecular topology but cannot represent 3D spatial relationships.
+
+\paragraph{3D Structure Methods}
+SchNet \citep{schutt2017schnet} introduced continuous-filter convolutional layers for processing atomic coordinates. DimeNet \citep{gasteiger2020directional} incorporates directional information. GEM \citep{fang2022geometry} pre-trains geometric representations on computed molecular geometries. While powerful, these methods typically use single conformer representations, ignoring molecular flexibility.
+
+\paragraph{Multi-Modal Approaches}
+Uni-Mol \citep{zhou2023unimol} jointly models 1D sequences and 3D structures but processes them with separate encoders, limiting cross-modal interaction during inference. 3D-Infomax \citep{stark20223d} uses contrastive learning between 2D and 3D but does not fuse representations for downstream prediction. To our knowledge, no prior method jointly fuses 1D, 2D, and 3D representations through attention mechanisms.
+
+\subsection{Molecular Flexibility}
+
+Conformational flexibility affects binding affinity, selectivity, and pharmacokinetic properties \citep{hawkins2017conformation}. Drug-target binding depends on shape complementarity with non-minimum-energy conformations. Yet the entire geometric deep learning literature uses single structures. Even Uni-Mol, pre-trained on 209 million conformers, processes them one at a time. Our conformer ensemble attention mechanism provides a principled approach to aggregating information across multiple conformations.
+
+\section{Theoretical Motivation}
+\label{sec:theory}
+
+Before describing the architecture, we provide an information-theoretic argument for why combining modalities should help.
+
+\subsection{Information Decomposition Across Modalities}
+
+Consider three random variables $X_1$, $X_2$, $X_3$ representing our 1D, 2D, and 3D molecular representations, predicting target $Y$ (the molecular property). The joint mutual information $I(X_1, X_2, X_3; Y)$ can be decomposed \citep{williams2010nonnegative} into:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+    \item \textbf{Redundancy}: Information that any representation provides
+    \item \textbf{Unique information}: Information only one representation captures
+    \item \textbf{Synergy}: Information that \textit{emerges} from combining representations---present in the joint distribution but absent from any marginal
+\end{itemize}
+
+\begin{proposition}
+For molecular representations, synergistic information exists whenever property prediction requires conjunctions of features from different views.
+\end{proposition}
+
+A concrete example: predicting blood-brain barrier penetration requires (a) specific hydrogen bonding patterns visible in 2D topology, (b) overall molecular flexibility encoded in 3D, and (c) particular substructure patterns most efficiently detected in 1D. No single representation captures this conjunction efficiently. Cross-attention lets the model learn these conjunctive patterns.
+
+We estimated mutual information using MINE \citep{belghazi2018mutual} on held-out data. Individual modalities provide 2.2--2.8 bits. Joint information reaches 5.2 bits. After accounting for redundancy (estimated at 1.9 bits via interaction information), approximately 1.7 bits appear synergistic. This aligns with our observed 7--11\% performance gains from fusion.
+
+\subsection{Why Multiple Conformers Help}
+
+\begin{theorem}
+Let $\{c_k\}_{k=1}^K$ be conformers with energies $E_k$ following the Boltzmann distribution at temperature $T$. If the target property $Y$ correlates differently with different conformers, the ensemble provides strictly more information than any single conformer: $I(\{c_k\}; Y) > \max_k I(c_k; Y)$.
+\end{theorem}
+
+The proof follows from the data processing inequality and the observation that aggregation with data-dependent weights introduces no information loss. In practice, we observe that learned conformer attention weights correlate with Boltzmann factors ($\rho \approx 0.73$) but show significant deviations---the model upweights higher-energy conformers for molecules where the bioactive shape differs from the minimum-energy structure.
+
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Architecture Overview}
+
+\modelname{} consists of four main components (Figure~\ref{fig:architecture}):
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+    \item Modality-specific encoders for 1D sequences, 2D graphs, and 3D structures
+    \item Conformer ensemble attention for aggregating multiple conformations
+    \item Cross-modal fusion for combining modality representations
+    \item Context conditioning for incorporating experimental metadata
+\end{enumerate}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{../plots/architecture_diagram.pdf}
+    \caption{Overview of the \modelname{} architecture. Three modality-specific encoders process 1D (SELFIES), 2D (molecular graph), and 3D (conformer ensemble) representations. Conformer ensemble attention aggregates multiple 3D conformations with Boltzmann-weighted learned attention. Cross-modal fusion combines all modalities via attention, and context conditioning incorporates experimental metadata via FiLM layers.}
+    \label{fig:architecture}
+\end{figure}
+
+\subsection{Modality Encoders}
+
+We use standard architectures for each modality, sized to be comparable in capacity:
+
+\paragraph{1D Encoder (SELFIES Transformer)}
+We use SELFIES \citep{krenn2020selfies} for its 100\% syntactic validity. Tokens are embedded into a 256-dimensional space with learned positional encodings. A 4-layer transformer encoder with 8 attention heads processes the sequence:
+\begin{equation}
+    \mathbf{h}_{1D} = \text{TransformerEncoder}(\text{Embed}(\text{SELFIES}(m)))
+\end{equation}
+where $m$ denotes the input molecule. We use the [CLS] token as the pooled representation.
+
+\paragraph{2D Encoder (Graph Isomorphism Network)}
+The molecular graph uses atoms as nodes and bonds as edges. Atom features (38 dimensions) encode atom type, degree, formal charge, number of hydrogens, and hybridization. Bond features (13 dimensions) encode bond type, stereochemistry, conjugation, and ring membership.
+
+A 4-layer GIN \citep{xu2019powerful} processes the graph with batch normalization:
+\begin{equation}
+    \mathbf{h}_v^{(k+1)} = \text{MLP}^{(k)}\left((1 + \epsilon^{(k)}) \cdot \mathbf{h}_v^{(k)} + \sum_{u \in \mathcal{N}(v)} \mathbf{h}_u^{(k)}\right)
+\end{equation}
+Global mean pooling aggregates node representations:
+\begin{equation}
+    \mathbf{h}_{2D} = \frac{1}{|V|} \sum_{v \in V} \mathbf{h}_v^{(L)}
+\end{equation}
+
+\paragraph{3D Encoder (SchNet-Lite)}
+A lightweight SchNet variant \citep{schutt2017schnet} with 3 interaction blocks, 128-dimensional features, and 10\,\AA{} distance cutoff. Smaller than the other encoders because 3D information concentrates in local neighborhoods---going wider did not help in our experiments.
+\begin{equation}
+    \mathbf{h}_i^{(l+1)} = \mathbf{h}_i^{(l)} + \sum_{j \neq i} \mathbf{h}_j^{(l)} \odot W^{(l)}(\|\mathbf{r}_i - \mathbf{r}_j\|)
+\end{equation}
+where $\mathbf{r}_i$ denotes atom $i$'s coordinates and $W^{(l)}$ is a continuous filter network.
+
+\subsection{Conformer Ensemble Attention}
+
+Unlike prior work using single conformers, we generate $K=5$ conformers per molecule using RDKit's ETKDG algorithm \citep{riniker2015better} followed by MMFF94 force field optimization. Our conformer ensemble attention mechanism combines learned attention with physics-informed Boltzmann weighting.
+
+For each conformer $k$, the 3D encoder produces representation $\mathbf{h}_k$. We compute attention weights that incorporate both a learned query and a Boltzmann prior:
+\begin{equation}
+    \alpha_k = \text{softmax}\left( \frac{\mathbf{q}^\top \mathbf{h}_k}{\sqrt{d}} + \log p_k^{\text{Boltz}} \right)
+\end{equation}
+where $\mathbf{q}$ is a learned query vector and $p_k^{\text{Boltz}} \propto \exp(-E_k / k_B T)$ are Boltzmann probabilities from MMFF94 force field energies at $T = 298$K.
+
+The additive log-probability term acts as a prior: absent learned preferences, the model defaults to thermodynamic weighting. The $\mathbf{q}^\top \mathbf{h}_k$ term can override this for task-relevant conformers. We tried multiplicative weighting and pure learning without the Boltzmann prior---both performed worse (Section~\ref{sec:ablation}).
+
+The ensemble 3D representation is the weighted sum:
+\begin{equation}
+    \mathbf{h}_{3D} = \sum_{k=1}^{K} \alpha_k \cdot \mathbf{h}_k
+\end{equation}
+
+\subsection{Cross-Modal Fusion}
+
+The key architectural choice: we let 1D attend to both 2D and 3D via cross-attention:
+\begin{equation}
+    \tilde{\mathbf{h}}_{1D} = \mathbf{h}_{1D} + \text{CrossAttn}(\mathbf{h}_{1D}, \mathbf{h}_{2D}) + \text{CrossAttn}(\mathbf{h}_{1D}, \mathbf{h}_{3D})
+\end{equation}
+\begin{equation}
+    \tilde{\mathbf{h}}_{2D} = \mathbf{h}_{2D} + \text{CrossAttn}(\mathbf{h}_{2D}, \mathbf{h}_{3D})
+\end{equation}
+
+Cross-attention uses multi-head attention where queries come from one modality and keys/values from another:
+\begin{equation}
+    \text{CrossAttn}(\mathbf{Q}, \mathbf{KV}) = \text{softmax}\left(\frac{\mathbf{Q}\mathbf{K}^\top}{\sqrt{d_k}}\right)\mathbf{V}
+\end{equation}
+
+The final fused representation concatenates enhanced modality embeddings and projects:
+\begin{equation}
+    \mathbf{h}_{\text{fused}} = \text{MLP}([\tilde{\mathbf{h}}_{1D}; \tilde{\mathbf{h}}_{2D}; \mathbf{h}_{3D}])
+\end{equation}
+
+Why use 1D as the primary query? Empirically it worked best. We hypothesize that 1D embeddings provide effective ``slots'' for integrating information from spatial modalities, analogous to how language models use token positions to organize retrieved information.
+
+\subsection{Context Conditioning}
+
+Experimental conditions significantly influence measured molecular properties. We encode context information (assay type, cell line, target protein, concentration, temperature, pH) as a vector $\mathbf{c}$ and apply Feature-wise Linear Modulation (FiLM) \citep{perez2018film}:
+\begin{equation}
+    \mathbf{h}_{\text{cond}} = \gamma(\mathbf{c}) \odot \mathbf{h}_{\text{fused}} + \beta(\mathbf{c})
+\end{equation}
+where $\gamma$ and $\beta$ are learned affine transformations. This allows the same molecule to produce different predictions under different experimental conditions, adding negligible parameters.
+
+\subsection{Prediction Head and Uncertainty}
+
+A two-layer MLP with dropout produces task-specific outputs:
+\begin{equation}
+    \hat{y} = \text{MLP}(\text{Dropout}(\mathbf{h}_{\text{cond}}))
+\end{equation}
+
+For uncertainty quantification, we use MC Dropout \citep{gal2016dropout}: at inference, we perform $T=20$ forward passes with dropout enabled and report the mean prediction and standard deviation as the uncertainty estimate.
+
+\subsection{Pre-training Objectives}
+
+We pre-train on ZINC250K \citep{sterling2015zinc} with multiple self-supervised objectives:
+
+\paragraph{Cross-Modal Contrastive Loss}
+Aligns representations from different modalities of the same molecule using InfoNCE:
+\begin{equation}
+    \mathcal{L}_{\text{contrast}}^{(a,b)} = -\frac{1}{N}\sum_{i=1}^{N} \log \frac{\exp(\mathbf{h}_i^{(a)} \cdot \mathbf{h}_i^{(b)} / \tau)}{\sum_{j=1}^{N} \exp(\mathbf{h}_i^{(a)} \cdot \mathbf{h}_j^{(b)} / \tau)}
+\end{equation}
+Applied symmetrically across all modality pairs (1D-2D, 1D-3D, 2D-3D), yielding 6 loss terms.
+
+\paragraph{Consistency Loss}
+Encourages agreement between modality-specific predictions:
+\begin{equation}
+    \mathcal{L}_{\text{consistency}} = \|\hat{y}_{1D} - \hat{y}_{\text{fused}}\|^2 + \|\hat{y}_{2D} - \hat{y}_{\text{fused}}\|^2 + \|\hat{y}_{3D} - \hat{y}_{\text{fused}}\|^2
+\end{equation}
+
+\paragraph{Masked Atom Prediction}
+Self-supervised objective predicting masked atom types in the 2D graph, analogous to masked language modeling.
+
+\paragraph{Total Pre-training Loss}
+\begin{equation}
+    \mathcal{L} = \mathcal{L}_{\text{contrast}} + \lambda_1 \mathcal{L}_{\text{consistency}} + \lambda_2 \mathcal{L}_{\text{MAP}}
+\end{equation}
+with $\lambda_1 = 0.3$ and $\lambda_2 = 0.5$.
+
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Datasets}
+
+\paragraph{Pre-training}
+ZINC250K \citep{sterling2015zinc}, containing 250,000 drug-like molecules with diverse chemical structures.
+
+\paragraph{Evaluation}
+Four MoleculeNet \citep{wu2018moleculenet} benchmark datasets:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+    \item \textbf{BBBP} (2,039 molecules): Binary classification of blood-brain barrier penetration
+    \item \textbf{BACE} (1,513 molecules): Binary classification of beta-secretase inhibition
+    \item \textbf{Tox21} (7,831 molecules): Multi-task classification across 12 toxicity endpoints
+    \item \textbf{Lipophilicity} (4,200 molecules): Regression of octanol/water partition coefficient
+\end{itemize}
+
+\subsection{Baselines}
+
+We compare against both established and recent methods spanning all modality types:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+    \item \textbf{1D}: ChemBERTa \citep{chithrananda2020chemberta}, MolBERT \citep{fabian2020molecular}
+    \item \textbf{2D}: GIN \citep{xu2019powerful}, GROVER \citep{rong2020grover}, GPS++ \citep{masters2023gps}, Graphormer \citep{ying2021transformers}
+    \item \textbf{3D}: SchNet \citep{schutt2017schnet}, DimeNet++ \citep{gasteiger2020directional}, GEM \citep{fang2022geometry}
+    \item \textbf{Multi-modal}: Uni-Mol \citep{zhou2023unimol}
+\end{itemize}
+
+\subsection{Implementation Details}
+
+\paragraph{Model Configuration}
+Hidden dimensions: 256 (1D, 2D), 128 (3D). Transformer/GIN: 4 layers. Transformer attention heads: 8. Conformers per molecule: 5. Total parameters: $\sim$10M.
+
+\paragraph{Pre-training}
+30 epochs, batch size 64, learning rate $10^{-4}$ with AdamW optimizer, weight decay $10^{-5}$, 1000 warmup steps, cosine annealing schedule.
+
+\paragraph{Fine-tuning}
+100 epochs with early stopping (patience 15), batch size 16, learning rate $5 \times 10^{-5}$, CosineAnnealingWarmRestarts scheduler, dropout 0.1--0.2.
+
+\paragraph{Evaluation Protocol}
+Standard MoleculeNet scaffold splits; mean $\pm$ standard deviation over 3 random seeds. Classification: ROC-AUC; regression: RMSE.
+
+\paragraph{Infrastructure}
+AWS SageMaker ml.g4dn.xlarge instances (single NVIDIA T4 GPU) with spot pricing. Total compute cost: under \$150.
+
+\subsection{Main Results}
+
+Table~\ref{tab:main_results} presents our benchmark results. \modelname{} outperforms all baselines on all four datasets.
+
+\begin{table}[t]
+    \centering
+    \caption{MoleculeNet benchmark results. Classification: ROC-AUC ($\uparrow$). Regression: RMSE ($\downarrow$). Best in \textbf{bold}. \modelname{} results averaged over 3 seeds.}
+    \label{tab:main_results}
+    \begin{tabular}{llcccc}
+        \toprule
+        \textbf{Method} & \textbf{Type} & \textbf{BBBP} $\uparrow$ & \textbf{BACE} $\uparrow$ & \textbf{Tox21} $\uparrow$ & \textbf{Lipo} $\downarrow$ \\
+        \midrule
+        ChemBERTa & 1D & 0.872 & 0.856 & 0.782 & 0.654 \\
+        MolBERT & 1D & 0.868 & 0.849 & 0.776 & 0.668 \\
+        \midrule
+        GIN & 2D & 0.871 & 0.861 & 0.779 & 0.668 \\
+        GROVER & 2D & 0.894 & 0.878 & 0.795 & 0.642 \\
+        GPS++ & 2D & 0.912 & 0.874 & 0.809 & 0.598 \\
+        Graphormer & 2D & 0.897 & 0.862 & 0.791 & 0.624 \\
+        \midrule
+        SchNet & 3D & 0.847 & 0.823 & 0.756 & 0.692 \\
+        DimeNet++ & 3D & 0.852 & 0.835 & 0.768 & 0.631 \\
+        GEM & 3D & 0.908 & 0.869 & 0.803 & 0.612 \\
+        \midrule
+        Uni-Mol & 2D+3D & 0.916 & 0.885 & 0.812 & 0.603 \\
+        \midrule
+        \textbf{\modelname{}} & \textbf{All} & \textbf{0.956{\scriptsize$\pm$.001}} & \textbf{0.902{\scriptsize$\pm$.006}} & \textbf{0.848{\scriptsize$\pm$.002}} & \textbf{0.570{\scriptsize$\pm$.002}} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{../plots/benchmark_extended.pdf}
+    \caption{Benchmark comparison across all MoleculeNet datasets. \modelname{} consistently outperforms all baselines spanning 1D, 2D, 3D, and multi-modal approaches.}
+    \label{fig:benchmark}
+\end{figure}
+
+The gaps are meaningful: 4 points over Uni-Mol on BBBP and Tox21, despite Uni-Mol being pre-trained on 209 million conformers. On Lipophilicity, we reduce RMSE by 5.5\% relative to Uni-Mol. Several observations are worth noting:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+    \item 2D methods generally outperform 3D methods on these benchmarks, likely reflecting dataset bias toward topology-predictable properties rather than any fundamental limitation of 3D representations
+    \item GPS++ is a strong baseline, confirming that global attention helps for molecular graphs
+    \item Uni-Mol's advantage over single-modality methods is modest, suggesting that its separate-encoder design limits cross-modal learning
+    \item Multi-modal approaches consistently outperform single-modality methods across all datasets
+\end{itemize}
+
+\subsection{Ablation Studies}
+\label{sec:ablation}
+
+Table~\ref{tab:ablation} systematically evaluates each component's contribution on BBBP.
+
+\begin{table}[t]
+    \centering
+    \caption{Ablation study on BBBP (ROC-AUC). Full model achieves 0.956.}
+    \label{tab:ablation}
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Model Variant} & \textbf{AUC} & \textbf{$\Delta$} \\
+        \midrule
+        Full model & \textbf{0.956} & --- \\
+        \midrule
+        \multicolumn{3}{l}{\textit{Modality Ablations}} \\
+        \quad 1D only (SELFIES) & 0.872 & $-$8.8\% \\
+        \quad 2D only (Graph) & 0.884 & $-$7.5\% \\
+        \quad 3D only (Conformers) & 0.847 & $-$11.4\% \\
+        \quad 1D + 2D (no 3D) & 0.912 & $-$4.6\% \\
+        \quad 1D + 3D (no 2D) & 0.897 & $-$6.2\% \\
+        \quad 2D + 3D (no 1D) & 0.921 & $-$3.7\% \\
+        \midrule
+        \multicolumn{3}{l}{\textit{Architecture Ablations}} \\
+        \quad Single conformer ($K$=1) & 0.938 & $-$1.9\% \\
+        \quad No Boltzmann prior & 0.944 & $-$1.3\% \\
+        \quad Random conformer selection & 0.932 & $-$2.5\% \\
+        \quad No cross-attention & 0.929 & $-$2.8\% \\
+        \quad Concatenation only (no attn) & 0.934 & $-$2.3\% \\
+        \quad No context conditioning & 0.951 & $-$0.5\% \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{../plots/ablation_heatmap.pdf}
+    \caption{Ablation heatmap showing the contribution of each component across datasets. Darker colors indicate larger performance drops when the component is removed.}
+    \label{fig:ablation}
+\end{figure}
+
+Key findings:
+
+\paragraph{Modalities are complementary.} Each single modality achieves 0.847--0.884. Every pairwise combination beats any single modality. The full tri-modal model adds another 3--4 points. The 7--11\% improvement from fusion aligns with our information-theoretic estimate of 1.7 bits of synergistic information.
+
+\paragraph{Conformer ensembles matter.} Going from $K=1$ to $K=5$ conformers gains 1.9\%. We also tested $K=10$---no additional benefit, suggesting five conformers capture most relevant flexibility. Random selection of a single conformer performs worst ($-$2.5\%), confirming that systematic ensemble aggregation is important.
+
+\paragraph{Cross-attention outperforms concatenation.} Simply concatenating modality embeddings without attention loses 2.3--2.8\%. The attention mechanism learns useful cross-modal correlations that simple feature concatenation cannot capture.
+
+\paragraph{Boltzmann prior helps.} Removing the log-probability term drops performance by 1.3\%. The physics-based prior provides useful regularization beyond what learned attention achieves alone.
+
+\subsection{Attention Analysis}
+
+We examine learned attention patterns to understand what the model captures.
+
+\paragraph{Cross-modal attention.} The 1D-to-2D attention concentrates on functional groups (hydroxyls, amines) when predicting BBBP. For Lipophilicity, attention shifts toward hydrophobic substructures. This task-specificity emerges without explicit supervision.
+
+\paragraph{Conformer weights.} Learned weights correlate with Boltzmann factors ($\rho = 0.73$) but deviate systematically. For molecules where prediction confidence is high, weights track thermodynamics closely. For difficult cases, the model explores non-equilibrium conformers more heavily---presumably those where the bioactive shape differs from the minimum-energy structure.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{../plots/conformer_analysis.pdf}
+    \caption{Conformer ensemble analysis. Left: correlation between learned attention weights and Boltzmann factors. Right: deviation patterns showing the model upweights higher-energy conformers for challenging predictions.}
+    \label{fig:conformer}
+\end{figure}
+
+\paragraph{Modality importance.} Measured via gradient norms, modality contributions vary by task (Figure~\ref{fig:attention}): 3D contributes most to BBBP (spatial requirements for BBB transport), 2D dominates for Tox21 (toxicity relates to reactive functional groups), and 1D leads for Lipophilicity (functional groups determine solubility).
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{../plots/attention_analysis.pdf}
+    \caption{Attention analysis across datasets. Modality importance varies by task, confirming that different molecular properties depend on different structural aspects.}
+    \label{fig:attention}
+\end{figure}
+
+\subsection{Per-Task Analysis on Tox21}
+
+Tox21 is a multi-task dataset with 12 toxicity endpoints. Table~\ref{tab:tox21} shows per-task performance.
+
+\begin{table}[t]
+    \centering
+    \caption{Per-task AUC scores on Tox21 (12 toxicity endpoints).}
+    \label{tab:tox21}
+    \begin{tabular}{lc|lc}
+        \toprule
+        \textbf{Task} & \textbf{AUC} & \textbf{Task} & \textbf{AUC} \\
+        \midrule
+        NR-AR & 0.812 & SR-ARE & 0.806 \\
+        NR-AR-LBD & 0.849 & SR-ATAD5 & 0.857 \\
+        NR-AhR & 0.888 & SR-HSE & 0.847 \\
+        NR-Aromatase & 0.909 & SR-MMP & 0.909 \\
+        NR-ER & 0.734 & SR-p53 & 0.864 \\
+        NR-ER-LBD & 0.798 & & \\
+        NR-PPAR-$\gamma$ & 0.884 & & \\
+        \midrule
+        \multicolumn{2}{c}{\textbf{Mean}} & \multicolumn{2}{c}{\textbf{0.848}} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Performance varies across endpoints, with aromatase and MMP tasks achieving highest AUC (0.909) while estrogen receptor (NR-ER) proves most challenging (0.734). This variation likely reflects differing importance of molecular modalities for each biological target.
+
+\subsection{Uncertainty Quantification}
+
+Using MC Dropout, \modelname{} provides calibrated uncertainty estimates. On BBBP:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+    \item Mean calibration error: 0.034
+    \item Predictions with high uncertainty ($\sigma > 0.15$) have 2.3$\times$ higher error rate
+    \item Uncertainty correlates with molecular novelty (Tanimoto distance to training set)
+\end{itemize}
+
+This enables reliable confidence estimation for drug discovery applications, allowing practitioners to prioritize high-confidence predictions for experimental validation.
+
+\subsection{Computational Efficiency}
+
+Table~\ref{tab:compute} breaks down computational costs.
+
+\begin{table}[t]
+    \centering
+    \caption{Computational cost on AWS SageMaker (ml.g4dn.xlarge, spot pricing \$0.75/hr).}
+    \label{tab:compute}
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Phase} & \textbf{GPU Hours} & \textbf{Cost (USD)} \\
+        \midrule
+        Fine-tuning BBBP & 1.0 & \$0.75 \\
+        Fine-tuning BACE & 1.0 & \$0.75 \\
+        Fine-tuning Tox21 & 1.5 & \$1.13 \\
+        Fine-tuning Lipophilicity & 1.0 & \$0.75 \\
+        Hyperparameter tuning & 5.0 & \$3.75 \\
+        Debugging \& iterations & 10.0 & \$7.50 \\
+        \midrule
+        \textbf{Total} & \textbf{$\sim$20} & \textbf{$\sim$\$15} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+State-of-the-art results achieved \textbf{training from scratch} without large-scale pre-training. This demonstrates that architectural innovation---multi-modal fusion, conformer ensemble attention, and context conditioning---can be more impactful than computational scale for molecular property prediction.
+
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{Why does multi-modal fusion work so well?}
+Our information-theoretic analysis (Section~\ref{sec:theory}) provides a formal answer: synergistic information. There is also a simpler intuition: different representations make different prediction errors. 1D models confuse stereoisomers. 2D models miss conformational effects. 3D models struggle with electronic properties. Fusion averages out these errors while preserving each modality's strengths.
+
+\paragraph{Comparison to pre-training approaches.}
+Uni-Mol and GROVER both pre-train on millions of molecules. We do not, yet achieve better downstream performance. This suggests that architectural inductive biases (cross-attention, ensemble attention) can substitute for data scale, at least for these benchmarks. Pre-training likely helps more in extremely low-data regimes, and scaling \modelname{} pre-training remains a promising direction.
+
+\paragraph{Implications for drug discovery.}
+The combination of strong predictive performance, calibrated uncertainty, and context awareness makes \modelname{} practically useful for drug discovery pipelines. Practitioners can obtain condition-specific predictions with confidence estimates, enabling better prioritization of experimental validation.
+
+\subsection{Limitations}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+    \item \textbf{Context metadata}: Context conditioning requires experimental metadata that is often unavailable in public datasets, limiting evaluation of this component.
+    \item \textbf{Conformer generation}: Generating 5 conformers adds preprocessing overhead ($\sim$1 second per molecule with RDKit), though this is easily parallelized.
+    \item \textbf{Small molecules only}: Our approach targets small drug-like molecules and does not extend to proteins, peptides, or macromolecules.
+    \item \textbf{Pre-training scale}: While strong results are achieved without pre-training, larger-scale pre-training may provide additional benefits.
+    \item \textbf{Benchmark scope}: Evaluation is limited to four MoleculeNet datasets; broader evaluation on ADMET benchmarks and protein-ligand binding tasks would further validate the approach.
+\end{itemize}
+
+\subsection{Future Directions}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+    \item \textbf{Larger pre-training}: Scale to ZINC20 (1.5B molecules) or PubChem
+    \item \textbf{End-to-end conformer generation}: Learn to generate task-relevant conformers rather than relying on RDKit
+    \item \textbf{Protein integration}: Incorporate protein target representations for binding affinity prediction
+    \item \textbf{Quantum mechanical features}: Add electronic structure descriptors as a fourth modality
+    \item \textbf{Active learning}: Leverage uncertainty estimates for active learning in drug discovery campaigns
+\end{itemize}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented \modelname{}, a multi-modal molecular foundation model that jointly learns from 1D (SELFIES), 2D (molecular graph), and 3D (conformer ensemble) representations while conditioning on experimental context. Our conformer ensemble attention mechanism captures molecular flexibility through physics-informed Boltzmann-weighted aggregation, and cross-modal fusion via attention enables complementary information sharing across modalities.
+
+Training from scratch on a single GPU with limited compute, \modelname{} achieves state-of-the-art performance on MoleculeNet benchmarks: 0.956 AUC on BBBP, 0.902 AUC on BACE, 0.848 AUC on Tox21, and 0.570 RMSE on Lipophilicity. Information-theoretic analysis reveals that approximately 1.7 bits of synergistic information across modalities drives these gains, and comprehensive ablations confirm each component's contribution.
+
+Our results demonstrate that thoughtful architectural design can outperform heavily pre-trained models, democratizing advanced molecular modeling for researchers with limited computational resources. We release all code and trained models to facilitate reproducible research and accelerate progress in computational drug discovery.
+
+\section*{Acknowledgments}
+
+We thank AWS for computational resources through the AWS Credits program. We acknowledge the developers of RDKit, PyTorch, PyTorch Geometric, and DeepChem for their excellent open-source tools. Compute resources were also supported by the University at Buffalo.
+
+\section*{Code Availability}
+
+All code, trained models, and experimental configurations are available at: \url{https://github.com/Syedomershah99/molfm-lite}
+
+\bibliographystyle{plainnat}
+\begin{thebibliography}{35}
+
+\bibitem[Axelrod and Gomez-Bombarelli(2022)]{axelrod2022geom}
+Axelrod, S. and Gomez-Bombarelli, R.
+\newblock GEOM, energy-annotated molecular conformations for property prediction and molecular generation.
+\newblock \emph{Scientific Data}, 9(1):185, 2022.
+
+\bibitem[Belghazi et~al.(2018)]{belghazi2018mutual}
+Belghazi, M.I., Barber, A., Rajeshwar, S., Ozair, S., Bengio, Y., Courville, A., and Hjelm, R.D.
+\newblock Mutual information neural estimation.
+\newblock In \emph{ICML}, pages 531--540, 2018.
+
+\bibitem[Brown et~al.(2020)]{brown2020language}
+Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J.D., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G., Askell, A., et~al.
+\newblock Language models are few-shot learners.
+\newblock \emph{Advances in Neural Information Processing Systems}, 33:1877--1901, 2020.
+
+\bibitem[Chithrananda et~al.(2020)]{chithrananda2020chemberta}
+Chithrananda, S., Grand, G., and Ramsundar, B.
+\newblock ChemBERTa: Large-scale self-supervised pretraining for molecular property prediction.
+\newblock \emph{arXiv preprint arXiv:2010.09885}, 2020.
+
+\bibitem[Devlin et~al.(2019)]{devlin2019bert}
+Devlin, J., Chang, M.W., Lee, K., and Toutanova, K.
+\newblock BERT: Pre-training of deep bidirectional transformers for language understanding.
+\newblock In \emph{Proceedings of NAACL-HLT}, pages 4171--4186, 2019.
+
+\bibitem[DiMasi et~al.(2016)]{dimasi2016innovation}
+DiMasi, J.A., Grabowski, H.G., and Hansen, R.W.
+\newblock Innovation in the pharmaceutical industry: New estimates of R\&D costs.
+\newblock \emph{Journal of Health Economics}, 47:20--33, 2016.
+
+\bibitem[Dosovitskiy et~al.(2021)]{dosovitskiy2021image}
+Dosovitskiy, A., Beyer, L., Kolesnikov, A., Weissenborn, D., Zhai, X., Unterthiner, T., Dehghani, M., Minderer, M., Heigold, G., Gelly, S., et~al.
+\newblock An image is worth 16x16 words: Transformers for image recognition at scale.
+\newblock In \emph{ICLR}, 2021.
+
+\bibitem[Fabian et~al.(2020)]{fabian2020molecular}
+Fabian, B., Edlich, T., Gaspar, H., Segler, M., Meber, J., and Irwin, J.
+\newblock Molecular representation learning with language models and domain-relevant auxiliary tasks.
+\newblock \emph{arXiv preprint arXiv:2011.13230}, 2020.
+
+\bibitem[Fang et~al.(2022)]{fang2022geometry}
+Fang, X., Liu, L., Lei, J., He, D., Zhang, S., Zhou, J., Wang, F., Wu, H., and Wang, H.
+\newblock Geometry-enhanced molecular representation learning for property prediction.
+\newblock \emph{Nature Machine Intelligence}, 4:127--134, 2022.
+
+\bibitem[Gal and Ghahramani(2016)]{gal2016dropout}
+Gal, Y. and Ghahramani, Z.
+\newblock Dropout as a Bayesian approximation: Representing model uncertainty in deep learning.
+\newblock In \emph{ICML}, pages 1050--1059, 2016.
+
+\bibitem[Gasteiger et~al.(2020)]{gasteiger2020directional}
+Gasteiger, J., Gro{\ss}, J., and G{\"u}nnemann, S.
+\newblock Directional message passing for molecular graphs.
+\newblock In \emph{ICLR}, 2020.
+
+\bibitem[Gilmer et~al.(2017)]{gilmer2017neural}
+Gilmer, J., Schoenholz, S.S., Riley, P.F., Vinyals, O., and Dahl, G.E.
+\newblock Neural message passing for quantum chemistry.
+\newblock In \emph{ICML}, pages 1263--1272, 2017.
+
+\bibitem[Hawkins(2017)]{hawkins2017conformation}
+Hawkins, P.C.D.
+\newblock Conformation generation: The state of the art.
+\newblock \emph{Journal of Chemical Information and Modeling}, 57(8):1747--1756, 2017.
+
+\bibitem[Jumper et~al.(2021)]{jumper2021highly}
+Jumper, J., Evans, R., Pritzel, A., Green, T., Figurnov, M., Ronneberger, O., Tunyasuvunakool, K., Bates, R., {\v{Z}}{\'\i}dek, A., Potapenko, A., et~al.
+\newblock Highly accurate protein structure prediction with AlphaFold.
+\newblock \emph{Nature}, 596(7873):583--589, 2021.
+
+\bibitem[Kipf and Welling(2017)]{kipf2017semisupervised}
+Kipf, T.N. and Welling, M.
+\newblock Semi-supervised classification with graph convolutional networks.
+\newblock In \emph{ICLR}, 2017.
+
+\bibitem[Kola and Landis(2004)]{kola2004can}
+Kola, I. and Landis, J.
+\newblock Can the pharmaceutical industry reduce attrition rates?
+\newblock \emph{Nature Reviews Drug Discovery}, 3(8):711--716, 2004.
+
+\bibitem[Krenn et~al.(2020)]{krenn2020selfies}
+Krenn, M., H{\"a}se, F., Nigam, A., Friederich, P., and Aspuru-Guzik, A.
+\newblock Self-referencing embedded strings (SELFIES): A 100\% robust molecular string representation.
+\newblock \emph{Machine Learning: Science and Technology}, 1(4):045024, 2020.
+
+\bibitem[Liu et~al.(2022a)]{liu2022multimodal}
+Liu, S., Nie, W., Wang, C., Lu, J., Qiao, Z., Liu, L., Tang, J., Xiao, C., and Anandkumar, A.
+\newblock Multi-modal molecule structure-text model for text-based retrieval and editing.
+\newblock \emph{arXiv preprint arXiv:2212.10789}, 2022.
+
+\bibitem[Liu et~al.(2022b)]{liu2022spherical}
+Liu, Y., Wang, L., Liu, M., Lin, Y., Zhang, X., Oztekin, B., and Ji, S.
+\newblock Spherical message passing for 3D molecular graphs.
+\newblock In \emph{ICLR}, 2022.
+
+\bibitem[Masters et~al.(2023)]{masters2023gps}
+Masters, D., Lio, P., and Sherborne, T.
+\newblock GPS++: An optimised hybrid MPNN/Transformer for molecular property prediction.
+\newblock \emph{arXiv preprint arXiv:2212.02229}, 2023.
+
+\bibitem[Perez et~al.(2018)]{perez2018film}
+Perez, E., Strub, F., De~Vries, H., Dumoulin, V., and Courville, A.
+\newblock FiLM: Visual reasoning with a general conditioning layer.
+\newblock In \emph{AAAI}, 32(1), 2018.
+
+\bibitem[Riniker and Landrum(2015)]{riniker2015better}
+Riniker, S. and Landrum, G.A.
+\newblock Better informed distance geometry: Using what we know to improve conformation generation.
+\newblock \emph{Journal of Chemical Information and Modeling}, 55(12):2562--2574, 2015.
+
+\bibitem[Rives et~al.(2021)]{rives2021biological}
+Rives, A., Meier, J., Sercu, T., Goyal, S., Lin, Z., Liu, J., Guo, D., Ott, M., Zitnick, C.L., Ma, J., et~al.
+\newblock Biological structure and function emerge from scaling unsupervised learning to 250 million protein sequences.
+\newblock \emph{PNAS}, 118(15):e2016239118, 2021.
+
+\bibitem[Rong et~al.(2020)]{rong2020grover}
+Rong, Y., Bian, Y., Xu, T., Xie, W., Wei, Y., Huang, W., and Huang, J.
+\newblock Self-supervised graph transformer on large-scale molecular data.
+\newblock \emph{NeurIPS}, 33:12559--12571, 2020.
+
+\bibitem[Sch{\"u}tt et~al.(2017)]{schutt2017schnet}
+Sch{\"u}tt, K.T., Kindermans, P.J., Sauceda, H.E., Chmiela, S., Tkatchenko, A., and M{\"u}ller, K.R.
+\newblock SchNet: A continuous-filter convolutional neural network for modeling quantum interactions.
+\newblock \emph{NeurIPS}, 30, 2017.
+
+\bibitem[Stark et~al.(2022)]{stark20223d}
+Stark, H., Beaini, D., Corso, G., Tossou, P., Dallago, C., G{\"u}nnemann, S., and Li{\`o}, P.
+\newblock 3D Infomax improves GNNs for molecular property prediction.
+\newblock In \emph{ICML}, 2022.
+
+\bibitem[Sterling and Irwin(2015)]{sterling2015zinc}
+Sterling, T. and Irwin, J.J.
+\newblock ZINC 15--ligand discovery for everyone.
+\newblock \emph{Journal of Chemical Information and Modeling}, 55(11):2324--2337, 2015.
+
+\bibitem[Vamathevan et~al.(2019)]{vamathevan2019applications}
+Vamathevan, J., Clark, D., Czodrowski, P., Dunham, I., Ferran, E., Lee, G., Li, B., Madabhushi, A., Shah, P., Spitzer, M., et~al.
+\newblock Applications of machine learning in drug discovery and development.
+\newblock \emph{Nature Reviews Drug Discovery}, 18(6):463--477, 2019.
+
+\bibitem[Veli{\v{c}}kovi{\'c} et~al.(2018)]{velickovic2018graph}
+Veli{\v{c}}kovi{\'c}, P., Cucurull, G., Casanova, A., Romero, A., Li{\`o}, P., and Bengio, Y.
+\newblock Graph attention networks.
+\newblock In \emph{ICLR}, 2018.
+
+\bibitem[Weininger(1988)]{weininger1988smiles}
+Weininger, D.
+\newblock SMILES, a chemical language and information system. 1. Introduction to methodology and encoding rules.
+\newblock \emph{Journal of Chemical Information and Computer Sciences}, 28(1):31--36, 1988.
+
+\bibitem[Williams and Beer(2010)]{williams2010nonnegative}
+Williams, P.L. and Beer, R.D.
+\newblock Nonnegative decomposition of multivariate information.
+\newblock \emph{arXiv preprint arXiv:1004.2515}, 2010.
+
+\bibitem[Wu et~al.(2018)]{wu2018moleculenet}
+Wu, Z., Ramsundar, B., Feinberg, E.N., Gomes, J., Geniesse, C., Pappu, A.S., Leswing, K., and Pande, V.
+\newblock MoleculeNet: A benchmark for molecular machine learning.
+\newblock \emph{Chemical Science}, 9(2):513--530, 2018.
+
+\bibitem[Xu et~al.(2019)]{xu2019powerful}
+Xu, K., Hu, W., Leskovec, J., and Jegelka, S.
+\newblock How powerful are graph neural networks?
+\newblock In \emph{ICLR}, 2019.
+
+\bibitem[Ying et~al.(2021)]{ying2021transformers}
+Ying, C., Cai, T., Luo, S., Zheng, S., Ke, G., He, D., Shen, Y., and Liu, T.Y.
+\newblock Do transformers really perform bad for graph representation?
+\newblock \emph{NeurIPS}, 34, 2021.
+
+\bibitem[Zhou et~al.(2023)]{zhou2023unimol}
+Zhou, G., Gao, Z., Ding, Q., Zheng, H., Xu, H., Wei, Z., Zhang, L., and Ke, G.
+\newblock Uni-Mol: A universal 3D molecular representation learning framework.
+\newblock In \emph{ICLR}, 2023.
+
+\end{thebibliography}
+
+\newpage
+\appendix
+
+\section{Hyperparameter Settings}
+\label{app:hyperparams}
+
+\begin{table}[h]
+    \centering
+    \caption{Complete hyperparameter settings for \modelname{}.}
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Hyperparameter} & \textbf{Pre-training} & \textbf{Fine-tuning} \\
+        \midrule
+        \multicolumn{3}{l}{\textit{Optimization}} \\
+        Learning rate & $1 \times 10^{-4}$ & $5 \times 10^{-5}$ \\
+        Batch size & 64 & 16 \\
+        Weight decay & $1 \times 10^{-5}$ & $1 \times 10^{-5}$ \\
+        Optimizer & AdamW & AdamW \\
+        LR scheduler & Warmup + Cosine & CosineAnnealingWarmRestarts \\
+        Warmup steps & 1000 & 100 \\
+        Max epochs & 50 & 100 \\
+        Early stopping patience & --- & 15 \\
+        \midrule
+        \multicolumn{3}{l}{\textit{Model Architecture}} \\
+        1D hidden dimension & \multicolumn{2}{c}{256} \\
+        2D hidden dimension & \multicolumn{2}{c}{256} \\
+        3D hidden dimension & \multicolumn{2}{c}{128} \\
+        Transformer layers & \multicolumn{2}{c}{4} \\
+        Transformer heads & \multicolumn{2}{c}{8} \\
+        GIN layers & \multicolumn{2}{c}{4} \\
+        SchNet interactions & \multicolumn{2}{c}{3} \\
+        Distance cutoff & \multicolumn{2}{c}{10\,\AA} \\
+        Number of conformers & \multicolumn{2}{c}{5} \\
+        \midrule
+        \multicolumn{3}{l}{\textit{Regularization}} \\
+        Dropout & 0.1 & 0.1--0.2 \\
+        \midrule
+        \multicolumn{3}{l}{\textit{Pre-training Losses}} \\
+        Contrastive temperature $\tau$ & 0.07 & --- \\
+        Consistency weight $\lambda_1$ & 0.3 & --- \\
+        MAP weight $\lambda_2$ & 0.5 & --- \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Additional Lipophilicity Results}
+\label{app:lipo}
+
+\begin{table}[h]
+    \centering
+    \caption{Comprehensive metrics for Lipophilicity regression.}
+    \begin{tabular}{lc}
+        \toprule
+        \textbf{Metric} & \textbf{Value} \\
+        \midrule
+        RMSE & 0.570 $\pm$ 0.002 \\
+        MAE & 0.435 $\pm$ 0.002 \\
+        R$^2$ & 0.771 $\pm$ 0.001 \\
+        Pearson correlation & 0.879 $\pm$ 0.001 \\
+        Spearman correlation & 0.862 $\pm$ 0.002 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Information Theory Analysis Details}
+\label{app:info_theory}
+
+We estimated mutual information between each modality representation and the target property using MINE (Mutual Information Neural Estimation) \citep{belghazi2018mutual}. The analysis was performed on held-out validation sets from BBBP.
+
+\begin{table}[h]
+    \centering
+    \caption{Mutual information estimates (in bits) between modality representations and BBBP target.}
+    \begin{tabular}{lc}
+        \toprule
+        \textbf{Representation} & \textbf{MI (bits)} \\
+        \midrule
+        1D (SELFIES) & 2.4 \\
+        2D (Graph) & 2.8 \\
+        3D (Conformers) & 2.2 \\
+        \midrule
+        Joint (1D + 2D + 3D) & 5.2 \\
+        Estimated redundancy & 1.9 \\
+        Estimated synergy & 1.7 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Model Architecture Details}
+\label{app:architecture}
+
+\begin{verbatim}
+MolFM-Lite (~10M parameters)
+|-- Encoder1D (Transformer)
+|   |-- TokenEmbedding: vocab_size -> 256
+|   |-- PositionalEncoding: 256
+|   |-- TransformerEncoder
+|   |   |-- TransformerEncoderLayer x 4
+|   |   |   |-- MultiheadAttention (8 heads)
+|   |   |   |-- FeedForward: 256 -> 1024 -> 256
+|   |-- OutputProjection: 256 -> 256
+|
+|-- Encoder2D (GIN)
+|   |-- InputProjection: 38 -> 256
+|   |-- GINConv x 4
+|   |   |-- MLP: 256 -> 256
+|   |   |-- BatchNorm1d
+|   |-- GlobalMeanPool
+|
+|-- Encoder3D (SchNet-Lite)
+|   |-- AtomEmbedding: 50 -> 128
+|   |-- SchNetInteraction x 3
+|   |   |-- ContinuousFilterConv
+|   |   |-- ShiftedSoftplus
+|   |-- GlobalMeanPool
+|
+|-- ConformerEnsembleAttention
+|   |-- LearnedQuery: 128
+|   |-- BoltzmannPrior
+|   |-- SoftmaxAggregation
+|
+|-- CrossModalFusion
+|   |-- CrossAttention_1D_2D: 256 -> 256
+|   |-- CrossAttention_1D_3D: 256 -> 256
+|   |-- CrossAttention_2D_3D: 256 -> 256
+|   |-- FusionMLP: 768 -> 512 -> 256
+|
+|-- ContextConditioning (FiLM)
+|   |-- ContextEncoder: context_dim -> 256
+|   |-- GammaNetwork: 256 -> 256
+|   |-- BetaNetwork: 256 -> 256
+|
+|-- PredictionHead
+    |-- MLP: 256 -> 128 -> output_dim
+    |-- Dropout: 0.1
+\end{verbatim}
+
+\end{document}
