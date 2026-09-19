@@ -1,5 +1,11 @@
 # MolFM-Lite: Multi-Modal Molecular Foundation Model
 
+<p align="center">
+  <a href="https://arxiv.org/abs/2602.22405">
+    <img src="https://img.shields.io/badge/📄%20Read%20the%20Paper-arXiv%3A2602.22405-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="Read the paper on arXiv">
+  </a>
+</p>
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![AWS](https://img.shields.io/badge/AWS-SageMaker-orange.svg)](https://aws.amazon.com/sagemaker/)
@@ -197,12 +203,12 @@ pretraining:
 ## Citation
 
 ```bibtex
-@article{shah2026molfm,
-  title={MolFM-Lite: A Multi-Modal Molecular Foundation Model with Context-Aware Predictions},
-  author={Shah, Syed Omer},
-  journal={GitHub},
+@article{shah2026molfmlite,
+  title={MolFM-Lite: Multi-Modal Molecular Property Prediction with Conformer Ensemble Attention and Cross-Modal Fusion},
+  author={Shah, Syed Omer and Ahmed, Mohammed Maqsood and Mohammed, Danish Mohiuddin},
+  journal={arXiv preprint arXiv:2602.22405},
   year={2026},
-  url={https://github.com/Syedomershah99/molfm-lite}
+  url={https://arxiv.org/abs/2602.22405}
 }
 ```
 
