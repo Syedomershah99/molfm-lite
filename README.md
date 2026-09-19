@@ -205,7 +205,7 @@ pretraining:
 ```bibtex
 @article{shah2026molfmlite,
   title={MolFM-Lite: Multi-Modal Molecular Property Prediction with Conformer Ensemble Attention and Cross-Modal Fusion},
-  author={Shah, Syed Omer and Ahmed, Mohammed Maqsood and Mohammed, Danish Mohiuddin},
+  author={Shah, Syed Omer and Ahmed, Mohammed Maqsood and Mohammed, Danish Mohiuddin and Alam, Shahnawaz and Rahman, Mohd Vahaj ur},
   journal={arXiv preprint arXiv:2602.22405},
   year={2026},
   url={https://arxiv.org/abs/2602.22405}
